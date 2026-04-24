@@ -10,18 +10,17 @@ RUN pip install --upgrade pip && \
 # ── Final stage ──────────────────────────────────────────────
 FROM python:3.11-slim
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash appuser
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
 
 WORKDIR /app
 
-# Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
-# Copy app source
 COPY main.py .
 
-# Switch to non-root user
+RUN chown -R appuser:appgroup /app
+
 USER appuser
 
 EXPOSE 8000

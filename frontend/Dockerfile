@@ -9,19 +9,18 @@ RUN npm install --omit=dev
 # ── Final stage ──────────────────────────────────────────────
 FROM node:20-slim
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash appuser
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
 
 WORKDIR /app
 
-# Copy only production node_modules from builder
 COPY --from=builder /build/node_modules ./node_modules
 
-# Copy app source
 COPY app.js .
 COPY views/ ./views/
 
-# Switch to non-root user
+RUN chown -R appuser:appgroup /app
+
 USER appuser
 
 EXPOSE 3000
