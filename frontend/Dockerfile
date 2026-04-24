@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────
-FROM node:20-slim AS builder
+FROM node:20-alpine AS builder
 
 WORKDIR /build
 
@@ -7,10 +7,9 @@ COPY package.json .
 RUN npm install --omit=dev
 
 # ── Final stage ──────────────────────────────────────────────
-FROM node:20-slim
+FROM node:20-alpine
 
-RUN groupadd --gid 1001 appgroup && \
-    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 

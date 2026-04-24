@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────
-FROM python:3.11-slim AS builder
+FROM python:3.11-alpine AS builder
 
 WORKDIR /build
 
@@ -7,10 +7,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ── Final stage ──────────────────────────────────────────────
-FROM python:3.11-slim
+FROM python:3.11-alpine
 
-RUN groupadd --gid 1001 appgroup && \
-    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
