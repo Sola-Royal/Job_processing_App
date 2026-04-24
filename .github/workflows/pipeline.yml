@@ -37,7 +37,8 @@ jobs:
         run: cd frontend && npm install eslint @eslint/js --save-dev
 
       - name: Lint JavaScript with eslint
-        run: cd frontend && npx eslint app.js --rule '{"no-unused-vars": "warn", "no-undef": "warn"}'
+        run: |
+          cd frontend && npx eslint app.js --rule "{\"no-unused-vars\": \"warn\", \"no-undef\": \"warn\"}"
 
       - name: Install hadolint
         run: |
