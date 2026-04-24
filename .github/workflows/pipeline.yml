@@ -208,7 +208,7 @@ jobs:
 
       - name: Create environment file
         run: |
-          echo "REDIS_PASSWORD=testpassword123" >> .env
+          echo "REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}" >> .env
           echo "APP_ENV=production" >> .env
           echo "FRONTEND_PORT=3000" >> .env
 
@@ -253,7 +253,7 @@ jobs:
 
       - name: Create environment file
         run: |
-          echo "REDIS_PASSWORD=testpassword123" >> .env
+          echo "REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}" >> .env
           echo "APP_ENV=production" >> .env
           echo "FRONTEND_PORT=3000" >> .env
 
