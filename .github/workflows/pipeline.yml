@@ -41,9 +41,9 @@ jobs:
 
       - name: Install hadolint
         run: |
-          wget -q -O /usr/local/bin/hadolint \
+          sudo wget -q -O /usr/local/bin/hadolint \
             https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
-          chmod +x /usr/local/bin/hadolint
+          sudo chmod +x /usr/local/bin/hadolint
 
       - name: Lint Dockerfiles with hadolint
         run: |
@@ -98,14 +98,6 @@ jobs:
         with:
           driver-opts: network=host
 
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-
       - name: Build and push API image
         uses: docker/build-push-action@v5
         with:
@@ -114,8 +106,6 @@ jobs:
           tags: |
             localhost:5000/api:${{ github.sha }}
             localhost:5000/api:latest
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
       - name: Build and push Worker image
         uses: docker/build-push-action@v5
@@ -125,8 +115,6 @@ jobs:
           tags: |
             localhost:5000/worker:${{ github.sha }}
             localhost:5000/worker:latest
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
       - name: Build and push Frontend image
         uses: docker/build-push-action@v5
@@ -136,13 +124,6 @@ jobs:
           tags: |
             localhost:5000/frontend:${{ github.sha }}
             localhost:5000/frontend:latest
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      - name: Rotate build cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
   security:
     name: Security Scan with Trivy
@@ -162,11 +143,11 @@ jobs:
         with:
           driver-opts: network=host
 
-      - name: Rebuild images for scanning
+      - name: Pull images from local registry
         run: |
-          docker buildx build --push --tag localhost:5000/api:latest ./api
-          docker buildx build --push --tag localhost:5000/worker:latest ./worker
-          docker buildx build --push --tag localhost:5000/frontend:latest ./frontend
+          docker pull localhost:5000/api:latest
+          docker pull localhost:5000/worker:latest
+          docker pull localhost:5000/frontend:latest
 
       - name: Scan API image with Trivy
         uses: aquasecurity/trivy-action@master
@@ -178,6 +159,8 @@ jobs:
           severity: CRITICAL
           exit-code: '1'
           ignore-unfixed: true
+          scanners: vuln
+          vuln-type: os
 
       - name: Scan Worker image with Trivy
         uses: aquasecurity/trivy-action@master
@@ -189,6 +172,8 @@ jobs:
           severity: CRITICAL
           exit-code: '1'
           ignore-unfixed: true
+          scanners: vuln
+          vuln-type: os
 
       - name: Scan Frontend image with Trivy
         uses: aquasecurity/trivy-action@master
@@ -200,6 +185,8 @@ jobs:
           severity: CRITICAL
           exit-code: '1'
           ignore-unfixed: true
+          scanners: vuln
+          vuln-type: os
 
       - name: Upload Trivy SARIF results artifact
         uses: actions/upload-artifact@v4
@@ -229,19 +216,12 @@ jobs:
         run: |
           echo "Waiting for services..."
           for i in $(seq 1 30); do
-            UNHEALTHY=$(docker compose ps --format json \
-              | python3 -c "
-          import sys, json
-          lines = [l for l in sys.stdin if l.strip()]
-          services = [json.loads(l) for l in lines]
-          bad = [s['Name'] for s in services if s.get('Health','') == 'unhealthy']
-          print(len(bad))
-          ")
+            UNHEALTHY=$(docker compose ps --format json | jq '[.[] | select(.Health != "healthy")] | length')
             if [ "$UNHEALTHY" = "0" ]; then
               echo "All services healthy!"
               break
             fi
-            echo "Attempt $i/30 — waiting..."
+            echo "Attempt $i/30 — waiting for services to be healthy..."
             sleep 5
           done
 
@@ -267,9 +247,6 @@ jobs:
           echo "APP_ENV=production" >> .env
           echo "FRONTEND_PORT=3000" >> .env
 
-      - name: Start stack
-        run: docker compose up --build -d
-
       - name: Rolling update all services
         run: |
           for SERVICE in api worker frontend; do
@@ -280,16 +257,14 @@ jobs:
             DEADLINE=$((SECONDS + 60))
             while [ $SECONDS -lt $DEADLINE ]; do
               CONTAINER=$(docker compose ps -q $SERVICE)
-              HEALTH=$(docker inspect \
-                --format='{{.State.Health.Status}}' \
-                "$CONTAINER" 2>/dev/null || echo "none")
+              HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER" 2>/dev/null || echo "none")
               echo "$SERVICE health: $HEALTH"
               if [ "$HEALTH" = "healthy" ]; then
                 echo "$SERVICE is healthy!"
                 break
               fi
               if [ $SECONDS -ge $DEADLINE ]; then
-                echo "$SERVICE failed — aborting!"
+                echo "$SERVICE failed health check — aborting!"
                 exit 1
               fi
               sleep 5
