@@ -1,31 +1,61 @@
+# Name shown in the GitHub Actions tab for this workflow
 name: CI/CD Pipeline
 
+# Events that trigger this workflow to run
 on:
   push:
-    branches: ["**"]
+    branches: ["**"]        # run on push to any branch
   pull_request:
-    branches: ["**"]
+    branches: ["**"]        # run on any pull request targeting any branch
 
+# All jobs in this pipeline. Jobs run in the order set by "needs",
+# so this pipeline is: secret_scan -> lint -> test -> build_and_scan -> integration -> deploy
 jobs:
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1: Secret scanning
+  # Checks the git history for accidentally committed secrets
+  # (API keys, passwords, tokens) before anything else runs.
+  # ─────────────────────────────────────────────────────────────
+  secret_scan:
+    name: Scan for Leaked Secrets       # display name for this job
+    runs-on: ubuntu-latest              # OS image the job runs on
+    steps:
+      - name: Checkout code             # pull the repo onto the runner
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                # fetch full git history (needed so Gitleaks can scan old commits, not just the latest one)
+
+      - name: Run Gitleaks               # scan the checked-out code + history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auth token so Gitleaks can post results/comments on the PR
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2: Lint
+  # Checks code style/quality and Dockerfile best practices.
+  # Only runs if secret_scan passed.
+  # ─────────────────────────────────────────────────────────────
   lint:
     name: Lint Code and Dockerfiles
     runs-on: ubuntu-latest
+    needs: secret_scan                  # wait for secret_scan to succeed before starting
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.11        # install Python so flake8 can run
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install flake8
+      - name: Install flake8            # flake8 = Python linter
         run: pip install flake8
 
-      - name: Lint Python with flake8
+      - name: Lint Python with flake8   # check api and worker Python files for style/errors
         run: flake8 api/main.py worker/worker.py --max-line-length=100
 
-      - name: Set up Node 20
+      - name: Set up Node 20            # install Node so eslint can run
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -33,28 +63,33 @@ jobs:
       - name: Install frontend dependencies and eslint
         run: |
           cd frontend
-          npm install
-          npm install eslint @eslint/js globals --save-dev
+          npm install                                        # install project dependencies
+          npm install eslint @eslint/js globals --save-dev    # install eslint as a dev dependency
 
-      - name: Lint JavaScript with eslint
+      - name: Lint JavaScript with eslint   # check frontend app.js for style/errors
         run: cd frontend && npx eslint app.js
 
-      - name: Install hadolint
+      - name: Install hadolint              # hadolint = Dockerfile linter, download the binary
         run: |
           sudo wget -q -O /usr/local/bin/hadolint \
             https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
-          sudo chmod +x /usr/local/bin/hadolint
+          sudo chmod +x /usr/local/bin/hadolint    # make the downloaded binary executable
 
-      - name: Lint Dockerfiles with hadolint
+      - name: Lint Dockerfiles with hadolint   # check each Dockerfile for best-practice violations
         run: |
           hadolint api/Dockerfile
           hadolint worker/Dockerfile
           hadolint frontend/Dockerfile
 
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3: Unit tests
+  # Runs the Python test suite with coverage reporting.
+  # Only runs if lint passed.
+  # ─────────────────────────────────────────────────────────────
   test:
     name: Run Unit Tests
     runs-on: ubuntu-latest
-    needs: lint
+    needs: lint                         # wait for lint to succeed before starting
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -64,7 +99,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install dependencies      # install runtime + test dependencies (Redis is mocked in tests, not a real service here)
         run: pip install fastapi uvicorn redis pytest pytest-cov httpx
 
       - name: Run pytest with coverage
@@ -74,31 +109,37 @@ jobs:
             --cov-report=xml \
             --cov-report=term
 
-      - name: Upload coverage report artifact
+      - name: Upload coverage report artifact   # save the coverage.xml so it can be viewed/downloaded later
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage.xml
 
+  # ─────────────────────────────────────────────────────────────
+  # JOB 4: Build, push, security-scan, and generate SBOMs
+  # Builds all 3 images, scans them with Trivy, and generates
+  # a Software Bill of Materials (SBOM) with Syft.
+  # Only runs if test passed.
+  # ─────────────────────────────────────────────────────────────
   build_and_scan:
     name: Build, Push and Security Scan
     runs-on: ubuntu-latest
-    needs: test
+    needs: test                         # wait for test to succeed before starting
     services:
-      registry:
+      registry:                         # spin up a temporary local Docker registry container for this job
         image: registry:2
         ports:
-          - 5000:5000
+          - 5000:5000                   # expose it on port 5000 so we can push/pull images to it
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
+      - name: Set up Docker Buildx      # enable advanced Docker build features (multi-stage, caching, etc.)
         uses: docker/setup-buildx-action@v3
         with:
-          driver-opts: network=host
+          driver-opts: network=host     # let the builder reach the local registry service on localhost
 
-      - name: Build and push images to local registry
+      - name: Build and push images to local registry   # build each service's image and push to the temp registry
         run: |
           docker build -t localhost:5000/api:latest ./api
           docker build -t localhost:5000/worker:latest ./worker
@@ -107,97 +148,127 @@ jobs:
           docker push localhost:5000/worker:latest
           docker push localhost:5000/frontend:latest
 
-      - name: Scan API image with Trivy
+      - name: Scan API image with Trivy          # scan the api image for known vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: localhost:5000/api:latest
-          format: sarif
-          output: trivy-api.sarif
-          severity: CRITICAL
-          exit-code: '1'
-          ignore-unfixed: true
-          scanners: vuln
-          vuln-type: os
+          image-ref: localhost:5000/api:latest    # which image to scan
+          format: sarif                           # output format (SARIF = standard format for security findings)
+          output: trivy-api.sarif                 # where to save the scan results
+          severity: CRITICAL,HIGH                 # only fail on these severity levels
+          exit-code: '1'                          # exit with error code 1 (fails the job) if matching vulnerabilities are found
+          ignore-unfixed: true                    # ignore vulnerabilities that have no fix available yet
+          scanners: vuln                          # only run the vulnerability scanner (not misconfig/secret scanners)
+          vuln-type: os,library                   # scan both OS packages and application-level libraries (pip/npm packages)
 
-      - name: Scan Worker image with Trivy
+      - name: Scan Worker image with Trivy        # same scan, applied to the worker image
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: localhost:5000/worker:latest
           format: sarif
           output: trivy-worker.sarif
-          severity: CRITICAL
+          severity: CRITICAL,HIGH
           exit-code: '1'
           ignore-unfixed: true
           scanners: vuln
-          vuln-type: os
+          vuln-type: os,library
 
-      - name: Scan Frontend image with Trivy
+      - name: Scan Frontend image with Trivy      # same scan, applied to the frontend image
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: localhost:5000/frontend:latest
           format: sarif
           output: trivy-frontend.sarif
-          severity: CRITICAL
+          severity: CRITICAL,HIGH
           exit-code: '1'
           ignore-unfixed: true
           scanners: vuln
-          vuln-type: os
+          vuln-type: os,library
 
-      - name: Upload Trivy SARIF results
+      - name: Upload Trivy SARIF results          # save all .sarif scan result files as a downloadable artifact
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always()                              # run this step even if a previous scan step failed, so results are still saved
         with:
           name: trivy-sarif-results
           path: "*.sarif"
 
+      - name: Install Syft                        # Syft = tool that generates a Software Bill of Materials (SBOM)
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM for API image         # list every package/library inside the api image
+        run: syft localhost:5000/api:latest -o spdx-json=sbom-api.spdx.json
+
+      - name: Generate SBOM for Worker image      # list every package/library inside the worker image
+        run: syft localhost:5000/worker:latest -o spdx-json=sbom-worker.spdx.json
+
+      - name: Generate SBOM for Frontend image    # list every package/library inside the frontend image
+        run: syft localhost:5000/frontend:latest -o spdx-json=sbom-frontend.spdx.json
+
+      - name: Upload SBOM artifacts               # save all SBOM files as a downloadable artifact
+        uses: actions/upload-artifact@v4
+        if: always()                              # save whatever SBOMs were generated even if a later step fails
+        with:
+          name: sbom-reports
+          path: "sbom-*.spdx.json"
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 5: Integration test
+  # Spins up the full stack with docker compose and runs an
+  # end-to-end test against it. Only runs if build_and_scan passed.
+  # ─────────────────────────────────────────────────────────────
   integration:
     name: Integration Test
     runs-on: ubuntu-latest
-    needs: build_and_scan
+    needs: build_and_scan               # wait for build_and_scan to succeed before starting
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create environment file
+      - name: Create environment file   # write a .env file using the GitHub Actions secret for Redis password
         run: |
           echo "REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}" >> .env
           echo "APP_ENV=production" >> .env
           echo "FRONTEND_PORT=3000" >> .env
 
-      - name: Start full stack with docker compose
-        run: docker compose up --build -d
+      - name: Start full stack with docker compose   # build and start all 4 containers (api, worker, frontend, redis)
+        run: docker compose up --build -d             # -d = detached mode, runs in background
 
       - name: Wait for all services to be healthy
         run: |
           echo "Waiting for services..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 30); do                    # retry loop, up to 30 attempts
             # Using python3 for a robust cross-platform check if jq isn't present
             UNHEALTHY=$(docker compose ps --format json | python3 -c "import sys, json; data=sys.stdin.read(); print(len([s for s in (json.loads(data) if data.startswith('[') else [json.loads(l) for l in data.splitlines()]) if s.get('Health') != 'healthy']))" 2>/dev/null || echo "1")
-            if [ "$UNHEALTHY" = "0" ]; then
+            if [ "$UNHEALTHY" = "0" ]; then            # if no unhealthy containers remain, stop waiting
               echo "All services healthy!"
               break
             fi
             echo "Attempt $i/30 — waiting for services..."
-            sleep 5
+            sleep 5                                    # wait 5 seconds before checking again
           done
 
-      - name: Run integration test script
+      - name: Run integration test script   # run the actual end-to-end test against the live stack
         run: bash integration_test.sh
 
-      - name: Tear down stack
-        if: always()
+      - name: Tear down stack               # stop and remove containers + volumes
+        if: always()                        # always clean up, even if the integration test failed
         run: docker compose down -v
 
+  # ─────────────────────────────────────────────────────────────
+  # JOB 6: Deploy
+  # Rolls out each service with a health-checked rolling update.
+  # Only runs on a direct push to main (not on pull requests),
+  # and only if integration passed.
+  # ─────────────────────────────────────────────────────────────
   deploy:
     name: Deploy Rolling Update
     runs-on: ubuntu-latest
-    needs: integration
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: integration                  # wait for integration to succeed before starting
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'   # only deploy from a push to the main branch
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create environment file
+      - name: Create environment file   # same .env setup as the integration job
         run: |
           echo "REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}" >> .env
           echo "APP_ENV=production" >> .env
@@ -205,25 +276,25 @@ jobs:
 
       - name: Rolling update all services
         run: |
-          for SERVICE in api worker frontend; do
+          for SERVICE in api worker frontend; do        # update each service one at a time (rolling, not all at once)
             echo "Rolling update: $SERVICE"
-            docker compose build $SERVICE
-            docker compose up -d --no-deps $SERVICE
+            docker compose build $SERVICE                # rebuild just this service's image
+            docker compose up -d --no-deps $SERVICE       # restart only this service, without touching its dependencies
 
-            DEADLINE=$((SECONDS + 60))
+            DEADLINE=$((SECONDS + 60))                    # give this service 60 seconds to become healthy
             while [ $SECONDS -lt $DEADLINE ]; do
-              CONTAINER=$(docker compose ps -q $SERVICE)
+              CONTAINER=$(docker compose ps -q $SERVICE)   # get the container ID for this service
               HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER" 2>/dev/null || echo "none")
               echo "$SERVICE health: $HEALTH"
-              if [ "$HEALTH" = "healthy" ]; then
+              if [ "$HEALTH" = "healthy" ]; then           # stop waiting once healthy
                 echo "$SERVICE is healthy!"
                 break
               fi
-              if [ $SECONDS -ge $DEADLINE ]; then
+              if [ $SECONDS -ge $DEADLINE ]; then          # abort the whole deploy if it never becomes healthy in time
                 echo "$SERVICE failed health check — aborting!"
                 exit 1
               fi
-              sleep 5
+              sleep 5                                      # wait 5 seconds before checking health again
             done
           done
           echo "Rolling update complete!"
