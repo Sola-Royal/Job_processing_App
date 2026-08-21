@@ -103,3 +103,6 @@ The pipeline runs automatically on every push via GitHub Actions:
 
 THe first attempt, it says no secretr link
 ![alt text](image.png)
+
+after editing it and change the dokcer file in three places it pass the `scan, lint, and run` because it is good for security purpose
+![alt text](image-1.png)
