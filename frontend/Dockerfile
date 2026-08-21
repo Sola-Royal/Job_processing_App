@@ -9,7 +9,7 @@ RUN npm install --omit=dev
 # ── Final stage ──────────────────────────────────────────────
 FROM node:20-alpine
 
-RUN addgroup -S -g 1000 appgroup && adduser -S -u 1000 appuser -G appgroup
+RUN addgroup -S -g 1001 appgroup && adduser -S -u 1001 appuser -G appgroup
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ COPY views/ ./views/
 
 RUN chown -R appuser:appgroup /app
 
-USER 1000
+USER 1001
 
 EXPOSE 3000
 
