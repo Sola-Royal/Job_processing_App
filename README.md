@@ -1,5 +1,5 @@
-# hng14-stage2-devops
-# HNG14 Stage 2 — Job Processing System
+# Devops project For Container Security in CI
+# Job Processing System
 
 A containerised job processing system built with FastAPI, Node.js, Redis, and Docker.
 
