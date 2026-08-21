@@ -12,6 +12,8 @@ FROM python:3.11-alpine
 
 RUN addgroup -S -g 1000 appgroup && adduser -S -u 1000 appuser -G appgroup
 
+RUN pip install --no-cache-dir --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0
+
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
