@@ -97,3 +97,9 @@ The pipeline runs automatically on every push via GitHub Actions:
 | `API_URL` | API base URL for frontend | `http://api:8000` |
 | `APP_ENV` | Application environment | `production` |
 | `FRONTEND_PORT` | Host port for frontend | `3000` |
+
+
+
+
+THe first attempt, it says no secretr link
+![alt text](image.png)
